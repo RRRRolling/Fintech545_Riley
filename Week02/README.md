@@ -1,4 +1,4 @@
-Please read the following before running the program:
+Please read the following before running the code:
 
 (1) There are several packages that needed to be installed to run this program. They are pandas, numpy, statsmodels.api, scipy and matplotlib.
 
