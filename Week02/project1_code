@@ -1,1 +1,197 @@
+import pandas as pd
+import numpy as np
+import os
+import statsmodels.api as sm
+from scipy.optimize import minimize
+from scipy.stats import norm
+from scipy.stats import t
+from scipy.stats import skew
+import matplotlib.pyplot as plt
 
+os.getcwd()
+os.chdir('C:\\Users\\19226\\Desktop\\Fintech545')
+
+#-------------------------------Problem 1--------------------------------------
+# read dataset
+p1_data = pd.read_csv('problem1.csv')
+n = len(p1_data)
+Mean = p1_data['x'].mean()
+
+# (1) Calculate the first 4 moment values using the normalized formulas in the Week 1 notes.
+p1_data['x2'] = p1_data['x'].apply(lambda x: (x-Mean)**2)
+p1_data['x3'] = p1_data['x'].apply(lambda x: (x-Mean)**3)
+p1_data['x4'] = p1_data['x'].apply(lambda x: (x-Mean)**4)
+
+Variance = p1_data['x2'].sum()/(n-1)
+bias_Var = p1_data['x2'].mean()
+std_Var = Variance**0.5
+
+Skew = p1_data['x3'].sum()/(n-1)/(n-2)*n/(std_Var**3)
+
+bias_Kurtosis = p1_data['x4'].mean()
+Kurtosis = n**2/((n-1)**3)/(n**2-3*n+3)*((n*(n-1)**2+(6*n-9))*bias_Kurtosis-n*(6*n-9*bias_Var))/Variance**2
+
+# (2) Calculate the first 4 moment values using your chosen statistical package
+Mean_2 = p1_data['x'].mean()
+Variance_2 = p1_data['x'].var()
+Skew_2 = p1_data['x'].skew()
+Kurtosis_2 = p1_data['x'].kurt()
+
+#-------------------------------Problem 2--------------------------------------
+# read dataset
+p2_data = pd.read_csv('problem2.csv')
+p2_datax = pd.read_csv('problem2_x.csv')
+X = p2_data['x']
+n = len(X)
+X = X.values.reshape(-1,1)
+Y = p2_data['y']
+Y = Y.values.reshape(-1,1)
+
+# OLS regression
+model = sm.OLS(Y, X)
+ols_results = model.fit()
+ols_beta = ols_results.params
+ols_errors = ols_results.resid
+ols_sigma = np.std(ols_errors)
+
+# MLE with assumption of normality
+def neg_log_likelihood(params):
+    beta = params[:1]
+    beta = beta.reshape(-1,1) 
+    sigma = params[1]
+    residuals = Y - X @ beta
+    nll = (n/2) * np.log(2 * np.pi * sigma**2) + np.sum(residuals**2) / (2 * sigma**2)
+    return nll
+
+initial_params = np.concatenate([np.zeros(1), [1.0]])
+MLE_result = minimize(neg_log_likelihood, initial_params, method='L-BFGS-B', bounds=[(None, None)] + [(1e-5, None)])
+mle_beta = MLE_result.x[0]
+mle_sigma = MLE_result.x[1]
+
+# MLE with assumption of T distribution
+def neg_log_likelihood2(params):
+    beta = params[:1]
+    beta = beta.reshape(-1,1) 
+    sigma = params[1]
+    nu = params[2]
+    residuals = Y - X @ beta
+    ll = np.sum(t.logpdf(residuals, df=nu, scale=sigma))
+    return -ll
+
+initial_params_T = np.concatenate([np.zeros(1), [1.0, 3.0]])
+MLE_result_T = minimize(neg_log_likelihood2, initial_params_T, method='L-BFGS-B', bounds=[(None, None)] + [(1e-5, None)]*2)
+mle_beta_T = MLE_result_T.x[0]
+mle_sigma_T = MLE_result_T.x[1]
+mle_nu_T = MLE_result_T.x[2]
+
+# Comparing
+# calculate AIC and BIC
+k_normal = 2  
+k_t = 3      
+
+log_likelihood_normal = -MLE_result.fun
+AIC_normal = 2 * k_normal - 2 * log_likelihood_normal
+BIC_normal = k_normal * np.log(n) - 2 * log_likelihood_normal
+
+log_likelihood_t = -MLE_result_T.fun
+AIC_t = 2 * k_t - 2 * log_likelihood_t
+BIC_t = k_t * np.log(n) - 2 * log_likelihood_t
+
+print(f"Normal Distribution: AIC = {AIC_normal}, BIC = {BIC_normal}, Log-Likelihood = {log_likelihood_normal}")
+print(f"T Distribution: AIC = {AIC_t}, BIC = {BIC_t}, Log-Likelihood = {log_likelihood_t}")
+
+# Fit a multivariate distribution to the data in problem2_x.csv.
+# Calculate the covariance matrix and means
+mean_vec = np.mean(p2_datax, axis=0)
+cov_matrix = np.cov(p2_datax.T)
+
+print("Mean Vector:", mean_vec)
+print("Covariance Matrix:\n", cov_matrix)
+
+# Compute conditional distributions for X2 given X1
+x1_values = p2_datax['x1']
+x2_values = p2_datax['x2']
+
+# Assuming multivariate normality
+cond_means = []
+cond_std_errors = []
+
+for x1 in x1_values:
+    cond_mean = mean_vec[1] + cov_matrix[0, 1] / cov_matrix[0, 0] * (x1 - mean_vec[0])
+    cond_var = cov_matrix[1, 1] - (cov_matrix[0, 1] ** 2) / cov_matrix[0, 0]
+    cond_std = np.sqrt(cond_var)
+    
+    cond_means.append(cond_mean)
+    cond_std_errors.append(cond_std)
+
+# Plot the results
+plt.figure(figsize=(10, 6))
+plt.errorbar(x1_values, cond_means, yerr=1.96 * np.array(cond_std_errors), fmt='o', label='95% CI')
+plt.scatter(x1_values, x2_values, color='red', label='Observed X2')
+plt.xlabel('X1')
+plt.ylabel('X2')
+plt.legend()
+plt.title('Conditional Expectation and Confidence Interval for X2 given X1')
+plt.show()
+
+#-------------------------------Problem 3--------------------------------------
+# read dataset
+p3_data = pd.read_csv('problem3.csv')
+values = p3_data['x']
+
+# Plot the data to understand its characteristics
+plt.figure(figsize=(10, 6))
+plt.plot(values)
+plt.title('Time Series Data')
+plt.xlabel('Time')
+plt.ylabel('Value')
+plt.show()
+
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+
+sm.graphics.tsa.plot_acf(values, lags=20)
+sm.graphics.tsa.plot_pacf(values, lags=20)
+
+plt.tight_layout()
+plt.show()
+
+# Function to fit and evaluate AR models
+def fit_ar_model(values, lags):
+    model = AutoReg(values, lags=lags)
+    results = model.fit()
+    return results
+
+# Function to fit and evaluate MA models
+def fit_ma_model(values, order):
+    model = ARIMA(values, order=(0, 0, order))
+    results = model.fit()
+    return results
+
+# Fit AR(1) - AR(3)
+ar_results = {}
+for lag in range(1, 4):
+    ar_results[f'AR({lag})'] = fit_ar_model(values, lag)
+
+# Fit MA(1) - MA(3)
+ma_results = {}
+for order in range(1, 4):
+    ma_results[f'MA({order})'] = fit_ma_model(values, order)
+
+def get_model_metrics(results):
+    aic = results.aic
+    bic = results.bic
+    return aic, bic
+
+# Print model metrics
+print("AR Model Metrics:")
+for model_name, results in ar_results.items():
+    aic, bic = get_model_metrics(results)
+    print(f"{model_name} - AIC: {aic:.2f}, BIC: {bic:.2f}")
+
+print("\nMA Model Metrics:")
+for model_name, results in ma_results.items():
+    aic, bic = get_model_metrics(results)
+    print(f"{model_name} - AIC: {aic:.2f}, BIC: {bic:.2f}")
