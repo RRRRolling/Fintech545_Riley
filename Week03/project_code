@@ -1,1 +1,324 @@
+import pandas as pd
+import numpy as np
+import os
+import statsmodels.api as sm
+from scipy.optimize import minimize
+from scipy.stats import norm
+from scipy.stats import t
+from scipy.stats import skew
+import matplotlib.pyplot as plt
+import sys
+from sklearn.decomposition import PCA
+import time
+import random
+
+os.getcwd()
+os.chdir('C:\\Users\\19226\\Desktop\\Fintech545\\project_files\\projectW3_files')
+
+#-------------------------------Problem 1--------------------------------------
+# read dataset
+data = pd.read_csv('DailyReturn.csv')
+
+# Calculate the exponentially weighted covariance matrix
+def ew_cov_matrix(a, Lambda):
+
+    n, k = a.shape
+
+    weights = np.array([(1 - Lambda) * Lambda**i for i in range(n)])
+    weights = weights[::-1]
+    mean = a.mean(axis=0)
+    deviations = a - mean
+    ew_cov = (deviations.T @ (deviations * weights[:, None])) / np.sum(weights)
+
+    return ew_cov
+
+def pca(data):
+    mean = np.mean(data, axis = 0)
+    centered_data = data - mean
+    
+    cov_matrix = np.cov(data.T)
+    eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
+    
+    idx = eigenvalues.argsort()[::-1]  # 按特征值从大到小排序
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    transformed_data = np.dot(centered_data, eigenvectors)
+    explained_variance_ratio = eigenvalues/np.sum(eigenvalues)
+
+    return transformed_data,eigenvectors, eigenvalues, mean, explained_variance_ratio
+
+lst_lambda = [0.1, 0.3, 0.5, 0.7, 0.9]
+plt.figure(figsize=(10, 6))
+for Lambda in lst_lambda:    
+    df = data.copy()
+    ew_cov = ew_cov_matrix(df, Lambda)
+    transformed_data, eigenvectors, eigenvalues, mean, explained_variance_ratio = pca(ew_cov)
+    cum_variance = np.cumsum(explained_variance_ratio)
+    plt.plot(cum_variance[:20], label=f'λ = {Lambda}')
+
+plt.xticks(ticks=np.arange(0, 20, step=2))
+plt.title('Cumulative Variance Explained by Each Eigenvalue')
+plt.xlabel('Number of Principal Components')
+plt.ylabel('Cumulative Explained Variance')
+plt.legend()
+plt.grid(True)
+
+#-------------------------------Problem 2--------------------------------------
+def near_psd(a, epsilon=1e-8):
+    n, k = a.shape
+
+    invSD = None
+    out = np.copy(a)
+
+    #calculate the correlation matrix if we got a covariance
+    if not np.allclose(np.diag(out), 1.0):
+        invSD = np.diag(1 / np.sqrt(np.diag(out)))
+        out = invSD @ out @ invSD
+
+    #SVD, update the eigen value and scale
+    vals, vecs = np.linalg.eigh(out)
+    vals = np.maximum(vals, epsilon)
+    T = 1 / (vecs**2 @ vals)
+    T = np.diag(np.sqrt(T))
+    l = np.diag(np.sqrt(vals))
+    B = T @ vecs @ l
+    out = B @ B.T
+
+    #Add back the variance
+    if invSD is not None: 
+        invSD = np.diag(1 / np.diag(invSD))
+        out = invSD @ out @ invSD
+    return out
+
+def get_Pu(A, W):
+    n, k = A.shape
+    W_ = np.linalg.inv(W)
+    I = np.eye(n)
+    theta = np.linalg.inv(W_*W_) @ np.diag(A-I)
+    out = A - W_ @ np.diag(theta) @ W_
+    return out
+
+def get_Ps(A, W):
+    W_sqrt = np.sqrt(W)
+    W_sqrt_negative = np.linalg.inv(W_sqrt)
+    n, k = A.shape   
+    temp = W_sqrt @ A @ W_sqrt
+    lambda_, S = np.linalg.eigh(temp)
+    temp_ = S @ np.diag(np.maximum(lambda_, 0)) @ S.T
+    out = W_sqrt_negative @ temp_ @ W_sqrt_negative
+    return out
+
+def ga(Y, A):
+    temp = Y - A
+    out = np.sum([x ** 2 for x in temp])
+    return out
+
+def Higham_psd(A):
+    n, k = A.shape
+    Y = A.copy()
+    w = np.eye(n)
+    S = 0
+    iteration = 0
+    gama = sys.float_info.max
+    while iteration < 1000000:
+        R = Y - S
+        X = get_Ps(R, w)
+        S = X - R
+        Y = get_Pu(X, w)
+        gama_ = ga(Y, A)
+        if np.abs((gama_-gama)) < 1e-8:
+            break
+        gama = gama_
+        iteration += 1
+    eigenvalues, eigenvectors = np.linalg.eigh(Y)
+    epsilon = 1e-8
+    eigenvalues = np.maximum(eigenvalues, epsilon)  # 将小的负特征值变为一个正的 epsilon
+    Y = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+    return Y
+
+def chol_psd(a):
+    n, k = a.shape
+    #Initialize the root matrix with 0 values
+    root = np.zeros_like(a)
+
+    #loop over columns
+    for j in range(n):
+        s = 0.0
+        #if we are not on the first column, calculate the dot product of the preceeding row values.
+        if j>0:
+            s =  root[j,:j].T @ root[j,:j]
+  
+        #Diagonal Element
+        temp = a[j,j] - s
+        if 0 >= temp and temp >= -1e-8:
+            temp = 0.0
+        root[j,j] =  np.sqrt(temp)
+
+        #Check for the 0 eigan value.  The column will already be 0, move to 
+        #next column
+        if 0.0 != root[j,j]:
+            #update off diagonal rows of the column
+            ir = 1.0/root[j,j]
+            for i in range((j+1),n):
+                s = root[i,:j].T @ root[j,:j]
+                root[i,j] = (a[i,j] - s) * ir 
+    
+    return root
+
+elapsed_time_near = []
+elapsed_time_higham = []
+error_near = []
+error_higham = []
+for n in [100, 300, 500, 700, 900, 1100]:
+    sigma = np.full((n, n), 0.9) 
+    np.fill_diagonal(sigma, 1.0)
+    sigma[0, 1] = 0.7357
+    sigma[1, 0] = 0.7357
+
+    start_time = time.time()
+    near_psd_matrix = near_psd(sigma)
+    end_time = time.time()
+    elapsed_time_near.append(end_time - start_time)
+    error_near.append(ga(sigma, near_psd_matrix))
+    
+    start_time = time.time()
+    Higham_psd_matrix = Higham_psd(sigma)
+    end_time = time.time()
+    elapsed_time_higham.append(end_time - start_time)
+    error_higham.append(ga(sigma, Higham_psd_matrix))
+
+
+    eigenvalues = np.linalg.eigvals(near_psd_matrix)
+    if np.all(eigenvalues >= -1e-8):
+        print('The result matrix is psd by near_psd')
+    else:
+        print('Fail')
+
+    eigenvalues = np.linalg.eigvals(Higham_psd_matrix)
+    if np.all(eigenvalues >= -1e-8):
+        print('The result matrix is psd by hiham_psd')
+    else:
+        print('Fail')   
+        
+    root_near = chol_psd(near_psd_matrix)
+    root_higham = chol_psd(Higham_psd_matrix)
+
+#-------------------------------Problem 3--------------------------------------
+data = pd.read_csv('DailyReturn.csv')
+
+def multivariate_normal_simulation(cov_matrix, n_simulations):
+    mean = [0] * len(cov_matrix)
+    L = chol_psd(cov_matrix)
+    
+    samples = []
+    for _ in range(n_simulations):
+        # 生成标准正态分布的随机数
+        z = [random.gauss(0, 1) for _ in range(len(mean))]
+        
+        # 通过下三角矩阵L转换为目标分布
+        sample = [sum(L[i][j] * z[j] for j in range(len(z))) for i in range(len(L))]
+        samples.append(sample)
+    return np.array(samples)
+
+def simulate_pca(n_simulations, data, var_explained):   
+    transformed_data, eigenvectors, eigenvalues, mean, explained_variance_ratio = pca(data)
+    
+    cum_variance = np.cumsum(explained_variance_ratio)
+    n_components = np.argmax(cum_variance >= var_explained) + 1
+    
+    selected_eig_vals = eigenvalues[:n_components]
+    selected_eig_vecs = eigenvectors[:, :n_components]
+    
+    Z = np.random.randn(n_simulations, n_components)
+    return Z @ np.diag(np.sqrt(selected_eig_vals)) @ selected_eig_vecs.T
+
+def pearson_matrix(data):
+    mean = np.mean(data, axis=0)
+    centered_data = data - mean
+    covariance_matrix = np.dot(centered_data.T, centered_data) / (data.shape[0] - 1)
+    std_dev = np.sqrt(np.diagonal(covariance_matrix))
+    correlation_matrix = covariance_matrix / np.outer(std_dev, std_dev)
+    return correlation_matrix, np.diagonal(covariance_matrix)
+
+def ew_matrix(a, Lambda = 0.97):
+    n, k = a.shape
+    
+    weights = np.array([(1 - Lambda) * Lambda**i for i in range(n)])
+    weights = weights[::-1]
+    
+    mean = a.mean(axis=0)
+    deviations = a - mean
+    ew_cov = (deviations.T @ (deviations * weights[:, None])) / np.sum(weights)
+    
+    std_dev = np.sqrt(np.diagonal(ew_cov))
+    ew_corr = ew_cov / np.outer(std_dev, std_dev)
+    return ew_corr, np.diagonal(ew_cov)
+
+ew_corr, ew_cov_ = ew_matrix(data)
+corr, cov_ = pearson_matrix(data)
+
+def covariance_matrix(corr_matrix, var_vector):
+    std_dev = np.sqrt(var_vector)  # 标准差向量
+    return corr_matrix * np.outer(std_dev, std_dev) 
+
+cov_pearson_standard_var = covariance_matrix(corr, cov_)
+
+cov_pearson_ew_var = covariance_matrix(corr, ew_cov_)
+
+cov_ew_corr_standard_var = covariance_matrix(ew_corr, cov_)
+
+cov_ew_corr_ew_var = covariance_matrix(ew_corr, ew_cov_)
+
+def run_simulations(cov_matrix, n_simulations=2):
+    # Direct
+    start_time = time.time()
+    direct_sim = multivariate_normal_simulation(cov_matrix, n_simulations)
+    cov_direct_sim = np.cov(direct_sim.T)
+    time_direct = time.time() - start_time
+    
+    # PCA 100%
+    start_time = time.time()
+    pca_100_sim = simulate_pca(n_simulations, cov_matrix, var_explained=1.0)
+    cov_pca_100_sim = np.cov(pca_100_sim.T)
+    time_pca_100 = time.time() - start_time
+    
+    # PCA 75%
+    start_time = time.time()
+    pca_75_sim = simulate_pca(n_simulations, cov_matrix, var_explained=0.75)
+    cov_pca_75_sim = np.cov(pca_75_sim.T)
+    time_pca_75 = time.time() - start_time
+    
+    # PCA 50%
+    start_time = time.time()
+    pca_50_sim = simulate_pca(n_simulations, cov_matrix, var_explained=0.50)
+    cov_pca_50_sim = np.cov(pca_50_sim.T)
+    time_pca_50 = time.time() - start_time
+    
+    # Frobenius Norm
+    frobenius_direct = ga(cov_matrix, cov_direct_sim)
+    frobenius_pca_100 = ga(cov_matrix, cov_pca_100_sim)
+    frobenius_pca_75 = ga(cov_matrix, cov_pca_75_sim)
+    frobenius_pca_50 = ga(cov_matrix, cov_pca_50_sim)
+    
+    # results
+    print("Frobenius Norm (L2 Norm):")
+    print(f"Direct Simulation: {frobenius_direct:.5f}")
+    print(f"PCA 100% Explained Variance: {frobenius_pca_100:.10f}")
+    print(f"PCA 75% Explained Variance: {frobenius_pca_75:.10f}")
+    print(f"PCA 50% Explained Variance: {frobenius_pca_50:.10f}")
+    
+    print("\n运行时间:")
+    print(f"Direct Simulation: {time_direct:.5f} seconds")
+    print(f"PCA 100% Explained Variance: {time_pca_100:.5f} seconds")
+    print(f"PCA 75% Explained Variance: {time_pca_75:.5f} seconds")
+    print(f"PCA 50% Explained Variance: {time_pca_50:.5f} seconds")
+
+run_simulations(cov_pearson_standard_var, 25000)
+
+run_simulations(cov_pearson_ew_var, 25000)
+
+run_simulations(cov_ew_corr_standard_var.to_numpy(), 25000)
+
+run_simulations(cov_ew_corr_ew_var.to_numpy(), 25000)
 
