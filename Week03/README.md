@@ -1,1 +1,7 @@
+Please read the following before running the code:
 
+(1) There are several packages that needed to be installed to run this program. They are pandas, numpy, statsmodels.api, scipy and matplotlib.
+
+(2) Please modify the file path to read the data at the beginning of the script. The original path was written based on the file location on my computer.
+
+(3) Make sure that you run the whole program. Because some functions used may be built in the previous Questions.
