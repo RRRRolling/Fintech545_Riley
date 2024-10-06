@@ -1,1 +1,125 @@
+import pandas as pd
+import numpy as np
+import os
+import statsmodels.api as sm
+from scipy.optimize import minimize
+import scipy.stats as stats
+from scipy.stats import norm
+from scipy.stats import t
+from scipy.stats import skew
+import matplotlib.pyplot as plt
+import sys
+from sklearn.decomposition import PCA
+import time
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA
+import random
 
+os.getcwd()
+os.chdir('C:\\Users\\19226\\Desktop\\Fintech545\\project_files\\projectW4_files')
+
+#-------------------------------Problem 2--------------------------------------
+# read dataset
+data = pd.read_csv('DailyPrices.csv', index_col='Date')
+
+def cal_return(df, method):
+    if method == 'Classic Brownian Motion':
+        out = df.diff(periods = 1)
+    if method == 'Arithmetic Return System':
+        out = df/df.shift(1)-1
+    if method == 'Log Return':
+        out = np.log(df/df.shift(1))
+    out.dropna(inplace=True)
+    return out
+
+daily_arReturn = cal_return(data, 'Arithmetic Return System')
+
+data2 = pd.DataFrame(daily_arReturn['META'])
+mean = data2.mean(axis = 0)
+data2 = data2-mean
+
+confidence_level = 0.95
+z_score = stats.norm.ppf(1 - confidence_level)
+
+#1 Assumption1 normal distribution
+sigma = data2.std(axis = 0)
+VaR = -(z_score * sigma)[0]
+
+#2 Assumption2 Using a normal distribution with an Exponentially Weighted variance (λ = 0. 94)
+def ew_cov_matrix(a, Lambda):
+    n = a.shape[0]
+
+    weights = np.array([(1 - Lambda) * Lambda**i for i in range(n)])
+    weights = weights[::-1]
+    mean = weights.T @ a
+    deviations = a - mean
+    ew_cov = (deviations.T @ (deviations * weights[:, None])) / np.sum(weights)
+
+    return ew_cov
+
+sigma_ew = np.sqrt(ew_cov_matrix(data2, 0.94).iloc[0,0])
+VaR_ew = -(z_score * sigma_ew)
+
+#3 Assumption3 Using a MLE fitted T distribution. 
+def t_log_likelihood(params, data):
+    df, mu, sigma = params
+    ll = -np.sum(t.logpdf(data, df=df, loc=mu, scale=sigma))
+    return ll
+
+initial_params = [5, 0, data2['META'].std(axis = 0)]
+result = minimize(t_log_likelihood, initial_params, args=(data2['META'],), bounds=[(2, None), (None, None), (1e-5, None)])
+df_mle, mu_mle, sigma_mle = result.x
+VaR_T = -t.ppf((1 - confidence_level), df=df_mle, loc=mu_mle, scale=sigma_mle)
+
+#4 Assumption4 Using a fitted AR(1) model.
+def std_ar1(data):
+    model = sm.tsa.ARIMA(data, order=(1, 0, 0)).fit()
+    residuals = model.resid
+    std_dev = np.std(residuals)
+    return std_dev
+std_dev = std_ar1(data2)
+VaR_ar1 = -(z_score * std_dev)
+    
+#5 Assumption5 Using a Historic Simulation.
+N = 100 
+simulated_returns = np.random.choice(data2['META'].values.tolist(), size=N, replace=True)
+current_price = data['META'].iloc[-1]
+
+simulated_prices = current_price * (1 + simulated_returns)
+VaR_historical = -(np.percentile(simulated_prices, (1-confidence_level) * 100)/current_price-1)
+
+
+#-------------------------------Problem 3--------------------------------------
+# read dataset
+Portfolio = pd.read_csv('portfolio.csv')
+D_Price = pd.read_csv('DailyPrices.csv', index_col = 'Date')
+
+def cal_VaR(df_price, Holding, return_type, confidence_level=0.95):
+    Holding = Holding.to_numpy()
+    df_return = cal_return(df_price, return_type)
+    z_score = stats.norm.ppf(1 - confidence_level)
+    sigma_ew = ew_cov_matrix(df_return, Lambda=0.97)
+    sigma_ew = sigma_ew.to_numpy()
+    total_portfolio_std = np.sqrt(Holding.T @ sigma_ew @ Holding)[0][0]
+    VaR = -z_score * total_portfolio_std 
+    return VaR
+
+VaR_portfolio = []
+return_type = 'Log Return'
+# return_type = 'Arithmetic Return System'
+Portfolio_catg = Portfolio['Portfolio'].drop_duplicates().values.tolist()
+for i in Portfolio_catg:  ###some issue
+    df_t = Portfolio[Portfolio['Portfolio'] == i].copy(deep=False)
+    stocks = df_t['Stock'].values.tolist()
+    col = [i for i in stocks if i in D_Price.columns]
+    
+    df_t2 = D_Price[col]
+    df_t = df_t[df_t['Stock'].isin(col)]
+    Holding = pd.DataFrame(df_t['Holding'].values)
+    VaR_portfolio.append(cal_VaR(df_t2, Holding, return_type))
+
+stocks = Portfolio['Stock'].values.tolist()
+col = [i for i in stocks if i in D_Price.columns]
+Portfolio = Portfolio[Portfolio['Stock'].isin(col)]
+Holding = pd.DataFrame(Portfolio['Holding'].values)
+VaR_portfolio.append(cal_VaR(D_Price[col], Holding, return_type))
