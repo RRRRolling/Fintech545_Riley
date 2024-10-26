@@ -1,0 +1,227 @@
+# -*- coding: utf-8 -*-
+import pandas as pd
+import numpy as np
+import os
+import statsmodels.api as sm
+from scipy.optimize import minimize
+import scipy.stats as stats
+from scipy.stats import norm
+from scipy.stats import t
+from scipy.stats import skew
+import matplotlib.pyplot as plt
+from scipy.stats import kurtosis
+import sys
+from sklearn.decomposition import PCA
+import time
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA
+from scipy.stats import multivariate_normal
+import random
+from tqdm import tqdm
+
+os.getcwd()
+os.chdir('C:\\Users\\19226\\Desktop\\Fintech545\\project_files\\projectW5_files')
+
+#-------------------------------Problem 1--------------------------------------
+#1 Assumption1 normal distribution
+def VaR_normal(data, confidence_level=0.95):
+    z_score = stats.norm.ppf(1 - confidence_level)
+    sigma = data.std(axis = 0)
+    VaR = -(z_score * sigma)[0]
+    return VaR
+
+#2 Assumption2 Using a normal distribution with an Exponentially Weighted variance (λ = 0. 94)
+def VaR_ew_cov(a, Lambda, confidence_level=0.95):
+    n = a.shape[0]
+
+    weights = np.array([(1 - Lambda) * Lambda**i for i in range(n)])
+    weights = weights[::-1]
+    mean = weights.T @ a
+    deviations = a - mean
+    ew_cov = (deviations.T @ (deviations * weights[:, None])) / np.sum(weights)
+    sigma_ew = np.sqrt(ew_cov(a).iloc[0,0])
+    VaR_ew = -(z_score * sigma_ew)
+    return VaR_ew
+
+def ew_cov_matrix(a, Lambda):
+    n = a.shape[0]
+
+    weights = np.array([(1 - Lambda) * Lambda**i for i in range(n)])
+    weights = weights[::-1]
+    mean = weights.T @ a
+    deviations = a - mean
+    ew_cov = (deviations.T @ (deviations * weights[:, None])) / np.sum(weights)
+
+    return ew_cov
+
+# Expected Shortfall
+def ES(x, VaR):
+    x = x.values
+    xs = np.sort(x)
+    xs = xs[xs <= VaR]
+    ES = np.mean(xs)
+    return -ES
+
+test2 = pd.read_csv('test2.csv')
+tesr2out = ew_cov_matrix(test2, 0.97)
+
+
+#-------------------------------Problem 2--------------------------------------
+data = pd.read_csv('problem1.csv')
+
+mean = data.mean(axis = 0)[0]
+confidence_level = 0.95
+z_score = stats.norm.ppf(1 - confidence_level)
+
+#Expected Shortfall
+def ES(x, VaR):
+    if isinstance(x, pd.Series):
+        x = x.values
+    xs = np.sort(x)
+    xs = xs[xs <= (-VaR)]
+    es = np.mean(xs)
+    return -es
+
+#1 Assumption1 Using a normal distribution with an Exponentially Weighted variance (λ = 0. 97)
+def ew_cov_matrix(a, Lambda):
+    n = a.shape[0]
+
+    weights = np.array([(1 - Lambda) * Lambda**i for i in range(n)])
+    weights = weights[::-1]
+    mean = weights.T @ a
+    deviations = a - mean
+    ew_cov = (deviations.T @ (deviations * weights[:, None])) / np.sum(weights)
+
+    return ew_cov
+
+sigma_ew = np.sqrt(ew_cov_matrix(data, 0.97).iloc[0,0])
+VaR_ew = -(z_score * sigma_ew)
+ES_ew = ES(data['x'], VaR_ew)
+
+#2 Assumption2 Using a MLE fitted T distribution. 
+def t_log_likelihood(params, data):
+    df, mu, sigma = params
+    ll = -np.sum(t.logpdf(data, df=df, loc=mu, scale=sigma))
+    return ll
+
+initial_params = [5, mean, data.std(axis = 0)[0]]
+result = minimize(t_log_likelihood, initial_params, args=(data['x'],), bounds=[(2, None), (None, None), (1e-5, None)])
+df_mle, mu_mle, sigma_mle = result.x
+VaR_T = -t.ppf((1 - confidence_level), df=df_mle, loc=mu_mle, scale=sigma_mle)
+ES_T = ES(data['x'], VaR_T)
+
+#3 Assumption3 Using a Historic Simulation.
+N = 100 
+simulated_x = np.random.choice(data['x'].values.tolist(), size=N, replace=True)
+VaR_historical = -(np.percentile(simulated_x, (1-confidence_level) * 100))
+ES_historical = ES(data['x'], VaR_historical)
+
+#-------------------------------Problem 3--------------------------------------
+Portfolio = pd.read_csv('Portfolio.csv')
+Price_Daily = pd.read_csv('DailyPrices.csv', index_col = 'Date')
+
+def cal_return(df, method):
+    if method == 'Classic Brownian Motion':
+        out = df.diff(periods = 1)
+    if method == 'Arithmetic Return System':
+        out = df/df.shift(1)-1
+    if method == 'Log Return':
+        out = np.log(df/df.shift(1))
+    out.dropna(inplace=True)
+    return out
+
+def fit_general_t(x):
+    #approximate values based on moments
+    start_m = 0
+    start_nu = 6.0/kurtosis(x) + 4
+    start_sigma = np.sqrt(np.var(x)*(start_nu-2)/start_nu)
+    initial_params = [start_m, start_nu, start_sigma]
+    result = minimize(t_log_likelihood, initial_params, args=(x,), bounds=[(0, 1e-5), (2, None), (1e-5, None)])
+    m, nu, sigma = result.x
+    return t(df=nu, loc=m, scale=sigma)
+
+def fit_normal(x):
+    m = np.mean(x)
+    sigma = np.std(x)
+    return norm(loc=m, scale=sigma)
+
+def cal_VaR(x, alpha=0.05):
+    return -np.percentile(x, 100 * alpha)
+
+def cal_VaR_copula(Price, Holding, fit_model, confidence_level=0.95):
+    Returns = cal_return(Price, 'Arithmetic Return System')
+    Returns = Returns - Returns.mean()
+    Portfolio = Holding
+    
+    fitted_distributions = Returns.apply(fit_model, axis=0)
+    U = np.column_stack([fitted_distributions[col].cdf(Returns[col]) for col in Returns.columns])
+    U = np.clip(U, 1e-10, 1 - 1e-10)
+    Z = norm.ppf(U)
+    R = np.corrcoef(Z, rowvar=False)
+    
+    # Simulate correlated samples using the copula and correlation matrix R
+    n_simulations = 10000
+    copula_samples = multivariate_normal.rvs(mean=np.zeros(R.shape[0]), cov=R, size=n_simulations)
+    
+    # Transform copula samples back to original distributions
+    simulated_returns = np.column_stack([
+        fitted_distributions[col].ppf(norm.cdf(copula_samples[:, i])) 
+        for i, col in enumerate(Returns.columns)
+    ])
+    simulated_returns_df = pd.DataFrame(simulated_returns, columns=Returns.columns)
+    
+    current_prices = Price.tail(1) 
+    iterations = pd.DataFrame({'iteration': range(1, n_simulations+1)})
+    values = Portfolio.merge(iterations, how='cross')  # 交叉连接组合每个股票持仓和迭代
+    nVals = len(values)
+    
+    values['currentValue'] = np.nan
+    values['simulatedValue'] = np.nan
+    values['pnl'] = np.nan
+
+    for i in tqdm(range(nVals)):
+        stock = values.loc[i, 'Stock']     
+        holding = values.loc[i, 'Holding']  
+        iteration = values.loc[i, 'iteration'] 
+        # 当前价格和模拟价格
+        price = current_prices[stock]
+        values.at[i, 'currentValue'] = holding * price
+        values.at[i, 'simulatedValue'] = holding * price * (1.0 + simulated_returns_df.loc[iteration - 1, stock])  
+        values.at[i, 'pnl'] = values.at[i, 'simulatedValue'] - values.at[i, 'currentValue']
+    
+    gdf = values.groupby('iteration')
+    
+    totalValues = gdf.agg(
+        currentValue=('currentValue', 'sum'),
+        simulatedValue=('simulatedValue', 'sum'),
+        pnl=('pnl', 'sum')
+    ).reset_index()
+    
+    VaR = cal_VaR(totalValues['pnl'], alpha=0.05)
+    es = ES(totalValues['pnl'], VaR)
+    return VaR, es
+
+#daily_arReturn = cal_return(Price_Daily, 'Arithmetic Return System')
+#For A
+A = Portfolio[Portfolio['Portfolio']=='A']
+group_A = [i for i in A['Stock'].values if i in (Price_Daily.columns)]
+Price_A = Price_Daily[group_A]
+VaR_A, ES_A = cal_VaR_copula(Price_A, A, fit_general_t)
+
+#For B
+B = Portfolio[Portfolio['Portfolio']=='B']
+group_B = [i for i in B['Stock'].values if i in (Price_Daily.columns)]
+Price_B = Price_Daily[group_B]
+VaR_B, ES_B = cal_VaR_copula(Price_B, B, fit_general_t)
+
+#For C
+C = Portfolio[Portfolio['Portfolio']=='C']
+group_C = [i for i in C['Stock'].values if i in (Price_Daily.columns)]
+Price_C = Price_Daily[group_C]
+C = Portfolio[Portfolio['Stock'].isin(group_C)]
+VaR_C, ES_C = cal_VaR_copula(Price_C, C, fit_normal)
+
+#For total
+group_total = group_A + group_B + group_C
+Holding_total = pd.concat([A, B, C], axis=0, ignore_index=True)
+VaR_total, ES_total = cal_VaR_copula(Price_Daily, Holding_total, fit_general_t)
