@@ -1,0 +1,250 @@
+
+# -*- coding: utf-8 -*-
+import pandas as pd
+import numpy as np
+import os
+import statsmodels.api as sm
+from scipy.optimize import minimize
+import scipy.stats as stats
+from scipy.stats import norm
+from scipy.stats import t
+from scipy.stats import skew
+import matplotlib.pyplot as plt
+from scipy.stats import kurtosis
+import sys
+from sklearn.decomposition import PCA
+import time
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA
+from scipy.stats import multivariate_normal
+import random
+from tqdm import tqdm
+from datetime import datetime
+from scipy.optimize import brentq
+
+os.getcwd()
+os.chdir('C:\\Users\\19226\\Desktop\\Fintech545\\project_files\\projectW6_files')
+
+#-------------------------------Problem 1--------------------------------------
+# setting initial values
+date1 = datetime(2023, 3, 3)
+date2 = datetime(2023, 3, 17)
+ttm = (date2 - date1).days/365
+underlying = 165
+strike = 165
+rf = 5.25/100
+q = 0.53/100
+
+volatilities = np.linspace(0.10, 0.80, 100)
+
+# Generalize Black-Scholes Merton option pricing formula
+# b = rf  -- Black Sholes 1973
+# b = rf - q  -- Merton 1973 stock model where q the continous dividend yield
+# b = 0       -- Black 1976 fatures option model
+# b,r = 0     -- Asay 1982 margined futures option model
+# b = rf - rff  -- Garman and Kohlhagen 1983 currency option model where rff if the risk rate of the foreign currency
+def gbsm(S, K, T, rf, b, sigma, cate):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    price = np.nan
+    if cate == 'Call':       
+        price = S * np.exp((b-rf) * T) * norm.cdf(d1) - K * np.exp(-rf * T) * norm.cdf(d2)
+    if cate == 'Put':
+        price = K * np.exp(-rf * T) * norm.cdf(-d2) - S * np.exp((b-rf) * T) * norm.cdf(-d1)
+    return price
+
+# Calculate call and put prices for each volatility
+call_prices = []
+put_prices = []
+b = rf - q
+
+for sigma in volatilities:
+    call_price = gbsm(underlying, strike, ttm, rf, b, sigma, 'Call')
+    put_price = gbsm(underlying, strike, ttm, rf, b, sigma, 'Put')
+    call_prices.append(call_price)
+    put_prices.append(put_price)
+
+# Plotting
+plt.figure(figsize=(12, 6))
+plt.plot(volatilities * 100, call_prices, label="Call Option Price", color="blue")
+plt.plot(volatilities * 100, put_prices, label="Put Option Price", color="red")
+plt.xlabel("Implied Volatility (%)")
+plt.ylabel("Option Price")
+plt.title("Option Prices vs. Implied Volatility (10% - 80%)")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+#-------------------------------Problem 2--------------------------------------
+# read dataset
+data = pd.read_csv('AAPL_Options.csv')
+Date_current = datetime(2023, 10, 30)
+Date_expiration = datetime.strptime(data.loc[1, 'Expiration'], "%m/%d/%Y")
+data = data[['Type', 'Strike', 'Last Price']]
+s = 170.15
+rf = 5.25/100
+d = 0.57/100
+ttm = (Date_expiration-Date_current).days/365
+b = rf-d ##############修改拜拜拜拜拜拜拜拜托
+
+Call = data[data['Type']=='Call']
+Put = data[data['Type']=='Put']
+Put.reset_index(drop=True, inplace=True)
+
+def implied_volatility(S, K, T, r, b, market_price, cate):
+    # Define the function to find the root
+    def objective_function(sigma):
+        return gbsm(S, K, T, r, b, sigma, cate) - market_price
+    
+    # Use brentq to solve for sigma between 0.001 and 3.0
+    try:
+        implied_vol = brentq(objective_function, 0.001, 10.0)  # 扩大区间
+    except ValueError:
+        # 如果brentq无法找到合适的零点，返回NaN或其他默认值
+        implied_vol = np.nan
+    return implied_vol
+
+Call['implied_volatility'] = np.nan
+for i in tqdm(range(len(Call))):
+    market_price = Call.loc[i, 'Last Price']     
+    K = Call.loc[i, 'Strike'] 
+    iv = implied_volatility(s, K, ttm, rf, b, market_price, 'Call')
+    Call.at[i, 'implied_volatility'] = iv
+    
+Put['implied_volatility'] = np.nan
+for i in tqdm(range(len(Put))):
+    market_price = Put.loc[i, 'Last Price']     
+    K = Put.loc[i, 'Strike'] 
+    iv = implied_volatility(s, K, ttm, rf, b, market_price, 'Put')
+    Put.at[i, 'implied_volatility'] = iv
+    
+plt.figure(figsize=(12, 6))
+plt.plot(Call['implied_volatility'], Call['Strike'], label="Call Option Price", color="blue")
+plt.plot(Put['implied_volatility'], Put['Strike'], label="Put Option Price", color="red")
+plt.xlabel("Implied Volatility (%)")
+plt.ylabel("Option Price")
+plt.title("Option Prices vs. Implied Volatility (10% - 80%)")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+#-------------------------------Problem 3--------------------------------------
+# read dataset
+data_3 = pd.read_csv('problem3.csv')
+data = data_3.copy(deep=False)
+current_price = 170.15
+underlying_prices = list(range(100, 241, 2))
+rf = 5.25/100
+d = 0.57/100
+b = rf - d ##############修改拜拜拜拜拜拜拜拜托
+
+def cal_payoff(strike, underlying_price, cate):
+    if cate == 'Call':
+        return np.maximum(0, underlying_price - strike)
+    if cate == 'Put':
+        return np.maximum(0, strike - underlying_price)
+    else:
+        return np.nan
+
+# for s in underlying_prices:
+#     data[s] = np.nan
+#     for j in range(len(data)):
+#         Strike = data.loc[j, 'Strike']
+#         cate = data.loc[j, 'OptionType']
+#         Holding = data.loc[j, 'Holding']
+#         market_price = data.loc[j, 'CurrentPrice']
+#         sigma = implied_volatility(current_price, Strike, ttm, rf, b, market_price, cate)
+#         value = gbsm(s, Strike, ttm, rf, b, sigma, cate) * Holding
+#         if data.loc[j, 'Type'] != 'Option':
+#             value = s
+#         data.loc[j, s] = value
+
+for s in underlying_prices:
+    data[s] = np.nan
+    for j in range(len(data)):
+        Strike = data.loc[j, 'Strike']
+        cate = data.loc[j, 'OptionType']
+        Holding = data.loc[j, 'Holding']
+        payoff = cal_payoff(Strike, s, cate) * Holding
+        if data.loc[j, 'Type'] != 'Option':
+            payoff = s
+        data.loc[j, s] = payoff
+
+df_payoff = data.groupby('Portfolio')[underlying_prices].sum()
+
+plt.figure(figsize=(10, 6))
+
+for portfolio in df_payoff.index:    
+    plt.plot(df_payoff.columns, df_payoff.loc[portfolio], label=portfolio)
+
+    plt.title('Profiles value of Different Option Strategies')
+    plt.xlabel('Underlying Price')
+    plt.ylabel('Portfolio Value')
+    plt.legend(loc='center right')
+    plt.grid(True)
+    plt.show()
+
+Prices = pd.read_csv('DailyPrices.csv', index_col = 'Date')
+Prices = Prices[['AAPL']]
+def cal_return(df, method):
+    if method == 'Classic Brownian Motion':
+        out = df.diff(periods = 1)
+    if method == 'Arithmetic Return System':
+        out = df/df.shift(1)-1
+    if method == 'Log Return':
+        out = np.log(df/df.shift(1))
+    out.dropna(inplace=True)
+    return out
+
+daily_LogReturn = cal_return(Prices, 'Log Return')
+daily_LogReturn = daily_LogReturn - np.mean(daily_LogReturn, axis = 0)
+
+# 拟合AR(1)模型
+ar_model = AutoReg(daily_LogReturn, lags=1).fit()
+ar_coefficient = ar_model.params[1]  # AR(1)系数
+intercept = ar_model.params[0]       # 截距项
+last_return = daily_LogReturn.iloc[-1]  # 从最后一个已知收益率开始
+
+simulated_returns = []
+for _ in range(10):
+    next_return = intercept + ar_coefficient * last_return
+    simulated_returns.append(next_return.values[0])
+    last_return = next_return
+
+simulated_prices = [current_price * np.exp(sum(simulated_returns[:i])) for i in range(1, 11)]
+Date_current = datetime(2023, 9, 23)
+ttm = ((datetime(2023, 12, 15) - Date_current).days)
+
+data = data_3.copy(deep=False)
+data['vol'] = np.nan
+for j in range(len(data)):
+    Strike = data.loc[j, 'Strike']
+    cate = data.loc[j, 'OptionType']
+    market_price = data.loc[j, 'CurrentPrice']
+    vol = implied_volatility(current_price, Strike, ttm/365, rf, b, market_price, cate)
+    if data.loc[j, 'Type'] != 'Option':
+        vol = np.nan
+    data.loc[j, 'vol'] = vol
+        
+for c in simulated_prices:
+    data[c] = np.nan
+    for j in range(len(data)):
+        Strike = data.loc[j, 'Strike']
+        cate = data.loc[j, 'OptionType']
+        Holding = data.loc[j, 'Holding']
+        sigma = data.loc[j, 'vol']
+        value = gbsm(c, Strike, ttm/365, rf, b, sigma, cate) * Holding
+        if data.loc[j, 'Type'] != 'Option':
+            value = s
+        data.loc[j, c] = value
+    ttm -= 1
+
+df_ = data.groupby('Portfolio')[simulated_prices].sum()  
+
+alpha = 0.05
+df_['Mean'] = df_.mean(axis=1)
+df_['VaR'] = df_.apply(lambda row: np.percentile(row, alpha * 100), axis=1)
+df_['ES'] = df_.apply(lambda row: row[row <= np.percentile(row, alpha * 100)].mean(), axis=1)
+
+df_ = df_[['Mean', 'VaR', 'ES']]
