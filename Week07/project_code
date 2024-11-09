@@ -1,0 +1,495 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Nov  7 15:19:19 2024
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import statsmodels.api as sm
+from scipy.optimize import minimize
+import scipy.stats as stats
+from scipy.stats import norm
+from scipy.stats import t
+from scipy.stats import skew
+import matplotlib.pyplot as plt
+from scipy.stats import kurtosis
+import sys
+from sklearn.decomposition import PCA
+import time
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.arima.model import ARIMA
+from scipy.stats import multivariate_normal
+import random
+from tqdm import tqdm
+from datetime import datetime, timedelta
+from scipy.optimize import brentq
+from statsmodels.api import OLS, add_constant
+
+
+os.getcwd()
+os.chdir('C:\\Users\\19226\\Desktop\\Fintech545\\project_files\\projectW7_files')
+
+#-------------------------------Problem 1--------------------------------------
+current_price = 151.03
+strike = 165
+current_date = datetime(2022, 3, 13)
+end_date = datetime(2022, 4, 15)
+rf = 4.25/100
+q = 0.53/100
+b = rf - q
+ttm = (end_date - current_date).days
+T = ttm/365
+sigma = 0.2 
+epsilon = 1e-5
+
+def gbsm(S, K, T, rf, b, sigma, cate):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    price = np.nan
+    if cate == 'Call':       
+        price = S * np.exp((b-rf) * T) * norm.cdf(d1) - K * np.exp(-rf * T) * norm.cdf(d2)
+    if cate == 'Put':
+        price = K * np.exp(-rf * T) * norm.cdf(-d2) - S * np.exp((b-rf) * T) * norm.cdf(-d1)
+    return price
+
+Price_forcall = gbsm(current_price, strike, T, rf, b, sigma, 'Call')
+Price_forput = gbsm(current_price, strike, T, rf, b, sigma, 'Put')
+
+def Delta(S, K, T, rf, b, sigma, cate):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    if cate == 'Call':
+        output = np.exp((b-rf) * T)*norm.cdf(d1)
+    if cate == 'Put':
+        output = np.exp((b-rf) * T)*(norm.cdf(d1)-1)
+    return output
+
+def Gamma(S, K, T, rf, b, sigma):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    output = np.exp((b-rf) * T)*norm.pdf(d1)/(S*sigma*np.sqrt(T))
+    return output
+
+def Vega(S, K, T, rf, b, sigma):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    output = S*np.exp((b-rf)*T)*norm.pdf(d1)*np.sqrt(T)
+    return output
+
+def Theta(S, K, T, rf, b, sigma, cate):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if cate == 'Call':
+        output = -(S*np.exp((b-rf)*T)*norm.pdf(d1)*sigma)/(2*np.sqrt(T))-(b-rf)*S*np.exp((b-rf)*T)*norm.cdf(d1)-rf*K*np.exp(-rf*T)*norm.cdf(d2)
+    if cate == 'Put':
+        output = -(S*np.exp((b-rf)*T)*norm.pdf(-d1)*sigma)/(2*np.sqrt(T))+(b-rf)*S*np.exp((b-rf)*T)*norm.cdf(d1)+rf*K*np.exp(-rf*T)*norm.cdf(-d2)
+    return output
+        
+def Rho(S, K, T, rf, b, sigma, cate):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if cate == 'Call':
+        output = T*K*np.exp(-rf*T)*norm.cdf(d2)
+    if cate == 'Put':
+        output = -T*K*np.exp(-rf*T)*norm.cdf(-d2)
+    return output
+    
+def carry_Rho(S, K, T, rf, b, sigma, cate):
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    if cate == 'Call':
+        output = T*S*np.exp((b-rf)*T)*norm.cdf(d1)
+    if cate == 'Put':
+        output = -T*S*np.exp((b-rf)*T)*norm.cdf(-d1) 
+    return output
+
+def greek_finite(S, K, T, rf, b, sigma, cate, greek, epsilon):
+    if greek == 'Delta':
+        S1 = S
+        S2 = S + epsilon
+        output = (gbsm(S2, K, T, rf, b, sigma, cate)-gbsm(S1, K, T, rf, b, sigma, cate))/epsilon
+    if greek == 'Vega':
+        sigma1 = sigma
+        sigma2 = sigma + epsilon
+        output = (gbsm(S, K, T, rf, b, sigma2, cate)-gbsm(S, K, T, rf, b, sigma1, cate))/epsilon
+    if greek == 'Theta':
+        T1 = T
+        T2 = T + epsilon
+        output = -(gbsm(S, K, T2, rf, b, sigma, cate)-gbsm(S, K, T1, rf, b, sigma, cate))/epsilon
+    if greek == 'Rho':
+        rf1 = rf
+        rf2 = rf + epsilon
+        b1 = b
+        b2 = b + epsilon
+        output = (gbsm(S, K, T, rf2, b2, sigma, cate)-gbsm(S, K, T, rf1, b1, sigma, cate))/epsilon
+    if greek == 'Carry_Rho':
+        b1 = b
+        b2 = b + epsilon
+        output = (gbsm(S, K, T, rf, b2, sigma, cate)-gbsm(S, K, T, rf, b1, sigma, cate))/epsilon
+    if greek == 'Gamma':
+        price_plus = gbsm(S + epsilon, K, T, rf, b, sigma, cate)
+        price_minus = gbsm(S - epsilon, K, T, rf, b, sigma, cate)
+        price = gbsm(S, K, T, rf, b, sigma, cate)
+        output = (price_plus - 2 * price + price_minus) / epsilon ** 2
+    return output
+
+# close form of greeks
+Delta_call = Delta(current_price, strike, T, rf, b, sigma, 'Call')    
+Delta_put = Delta(current_price, strike, T, rf, b, sigma, 'Put')   
+ 
+Gamma_ = Gamma(current_price, strike, T, rf, b, sigma)
+Vega_ =  Vega(current_price, strike, T, rf, b, sigma)
+
+Theta_call = Theta(current_price, strike, T, rf, b, sigma, 'Call')    
+Theta_put = Theta(current_price, strike, T, rf, b, sigma, 'Put')   
+ 
+Rho_call = Rho(current_price, strike, T, rf, b, sigma, 'Call')    
+Rho_put = Rho(current_price, strike, T, rf, b, sigma, 'Put')   
+ 
+carry_Rho_call = carry_Rho(current_price, strike, T, rf, b, sigma, 'Call')    
+carry_Rho_put = carry_Rho(current_price, strike, T, rf, b, sigma, 'Put')   
+ 
+# finite differentiation of greeks
+Delta2_call = greek_finite(current_price, strike, T, rf, b, sigma, "Call", 'Delta', epsilon)
+Delta2_put = greek_finite(current_price, strike, T, rf, b, sigma, "Put", 'Delta', epsilon)
+
+Gamma2_call = greek_finite(current_price, strike, T, rf, b, sigma, "Call", 'Gamma', epsilon)
+Gamma2_put = greek_finite(current_price, strike, T, rf, b, sigma, "Put", 'Gamma', epsilon)
+
+Theta2_call = greek_finite(current_price, strike, T, rf, b, sigma, "Call", 'Theta', epsilon)
+Theta2_put = greek_finite(current_price, strike, T, rf, b, sigma, "Put", 'Theta', epsilon)
+
+Vega2_call = greek_finite(current_price, strike, T, rf, b, sigma, "Call", 'Vega', epsilon)
+Vega2_put = greek_finite(current_price, strike, T, rf, b, sigma, "Put", 'Vega', epsilon)
+  
+Rho2_call = greek_finite(current_price, strike, T, rf, b, sigma, "Call", 'Rho', epsilon)
+Rho2_put = greek_finite(current_price, strike, T, rf, b, sigma, "Put", 'Rho', epsilon)
+
+carry_Rho2_call = greek_finite(current_price, strike, T, rf, b, sigma, "Call", 'Carry_Rho', epsilon)
+carry_Rho2_put = greek_finite(current_price, strike, T, rf, b, sigma, "Put", 'Carry_Rho', epsilon)
+
+result_df = pd.DataFrame()
+greeks = ['Delta', 'Gamma', 'Theta', 'Vega', 'Rho', 'Carry_Rho']
+result_df['Greeks'] = greeks
+result_df['close_form_call'] = [Delta_call, Gamma_, Theta_call, Vega_, Rho_call, carry_Rho_call]
+result_df['finite_call'] = [Delta2_call, Gamma2_call, Theta2_call, Vega2_call, Rho2_call, carry_Rho2_call]
+result_df['close_form_put'] = [Delta_put, Gamma_, Theta_put, Vega_, Rho_put, carry_Rho_put]
+result_df['finite_put'] = [Delta2_put, Gamma2_put, Theta2_put, Vega2_put, Rho2_put, carry_Rho2_put]
+
+# Implement the binomial tree valuation for American options with and without discrete dividends.
+# Pays dividend on 4/11/2022 of $0.88
+# Calculate the value of the call and the put. Calculate the Greeks of each.
+# What is the sensitivity of the put and call to a change in the dividend amount?
+
+dividend_date = datetime(2022, 4, 11)
+dividend = 0.88
+N = 100
+div_times = [int((dividend_date-current_date).days/ttm*N)]
+div_amts = [dividend]
+
+def bt_american(underlying, strike, ttm, rf, div_amts, div_times, ivol, N, cate):
+    """
+    Binomial tree model for American options with discrete dividends.
+
+    Parameters:
+    - underlying: float, current price of the underlying asset
+    - strike: float, strike price of the option
+    - ttm: float, time to maturity (in years)
+    - rf: float, risk-free rate
+    - div_amts: list of floats, amounts of dividends at specified times
+    - div_times: list of ints, times (in steps) at which dividends are paid
+    - ivol: float, implied volatility
+    - N: int, number of steps in the binomial tree
+
+    Returns:
+    - option value at the root of the tree
+    """
+    # If there are no dividends or the first dividend is outside the grid, use standard binomial tree pricing
+    if not div_amts or not div_times or div_times[0] > N:
+        return bt_standard_american(underlying, strike, ttm, rf, ivol, N, cate)
+
+    dt = ttm / N
+    u = np.exp(ivol * np.sqrt(dt))
+    d = 1 / u
+    pu = (np.exp(rf * dt) - d) / (u - d)
+    pd = 1 - pu
+    df = np.exp(-rf * dt)
+    z = 1 if cate == 'Call' else -1
+
+    def n_node_func(n):
+        return (n + 1) * (n + 2) // 2
+
+    def idx_func(i, j):
+        return n_node_func(j - 1) + i
+
+    n_div = len(div_times)
+    n_nodes = n_node_func(div_times[0])
+
+    # Initialize option values array
+    option_values = np.empty(n_nodes)
+
+    # Work backwards through the tree
+    for j in range(div_times[0], -1, -1):
+        for i in range(j, -1, -1):
+            idx = idx_func(i, j)
+            price = underlying * (u ** i) * (d ** (j - i))
+
+            if j < div_times[0]:
+                # Before the dividend payment
+                option_values[idx] = max(0, z * (price - strike))
+                option_values[idx] = max(option_values[idx], df * (pu * option_values[idx_func(i + 1, j + 1)] + pd * option_values[idx_func(i, j + 1)]))
+            else:
+                # Time of the dividend
+                val_no_exercise = bt_american(
+                    price - div_amts[0], 
+                    strike, 
+                    ttm - div_times[0] * dt, 
+                    rf, 
+                    div_amts[1:], 
+                    [t - div_times[0] for t in div_times[1:]], 
+                    ivol, 
+                    N - div_times[0],
+                    cate
+                )
+                val_exercise = max(0, z * (price - strike))
+                option_values[idx] = max(val_no_exercise, val_exercise)
+
+    return option_values[0]
+
+def bt_standard_american(underlying, strike, ttm, rf, ivol, N, cate):
+    """
+    Standard binomial tree model for American options without dividends.
+
+    Parameters are similar to bt_american.
+    """
+    dt = ttm / N
+    u = np.exp(ivol * np.sqrt(dt))
+    d = 1 / u
+    pu = (np.exp(rf * dt) - d) / (u - d)
+    pd = 1 - pu
+    df = np.exp(-rf * dt)
+    z = 1 if cate == 'Call' else -1
+    
+    # Initialize stock price and option value trees
+    stock_prices = np.zeros((N + 1, N + 1))
+    option_values = np.zeros((N + 1, N + 1))
+
+    # Set up stock price tree
+    for j in range(N + 1):
+        for i in range(j + 1):
+            stock_prices[i, j] = underlying * (u ** i) * (d ** (j - i))
+
+    # Option values at maturity
+    for i in range(N + 1):
+        option_values[i, N] = max(0, z * (stock_prices[i, N] - strike))
+
+    # Backward induction
+    for j in range(N - 1, -1, -1):
+        for i in range(j + 1):
+            hold_value = df * (pu * option_values[i + 1, j + 1] + pd * option_values[i, j + 1])
+            exercise_value = max(0, z * (stock_prices[i, j] - strike))
+            option_values[i, j] = max(hold_value, exercise_value)
+
+    return option_values[0, 0]
+
+call_prices = []
+put_prices = []
+for i in range(20):
+    div_amts = [dividend+i]
+    Call_price = bt_american(current_price, strike, T, rf, div_amts, div_times, sigma, N, "Call")
+    Put_price = bt_american(current_price, strike, T, rf, div_amts, div_times, sigma, N, "Put")
+
+    call_prices.append(Call_price)
+    put_prices.append(Put_price)
+    
+Call_price = bt_american(current_price, strike, T, rf, div_amts, div_times, sigma, N, "Call")
+Put_price = bt_american(current_price, strike, T, rf, div_amts, div_times, sigma, N, "Put")
+
+#-------------------------------Problem 2--------------------------------------
+data_2 = pd.read_csv('problem2.csv')
+Prices = pd.read_csv('DailyPrices.csv', index_col = 'Date')
+current_date = datetime(2023, 3, 3)
+end_date = datetime(2023, 4, 21)
+ttm = (end_date-current_date).days
+current_price = 165
+rf = 4.25/100
+dividend = 1
+dividend_date = datetime(2023, 3, 15)
+N = 100
+div_times = [int((dividend_date-current_date).days/ttm*N)]
+div_amts = [dividend]
+
+Prices = Prices[['AAPL']]
+
+def implied_volatility(S, K, ttm, rf, div_amts, div_times, market_price, N, cate):
+    # Define the function to find the root
+    def objective_function(sigma):
+        output = bt_american(S, K, ttm, rf, div_amts, div_times, sigma, N, cate) - market_price
+        return output
+    
+    # Use brentq to solve for sigma between 0.001 and 3.0
+    try:
+        implied_vol = brentq(objective_function, 0.001, 1000)  # 扩大区间
+    except ValueError:
+        # 如果brentq无法找到合适的零点，返回NaN或其他默认值
+        implied_vol = np.nan
+    return implied_vol
+
+def cal_return(df, method):
+    if method == 'Classic Brownian Motion':
+        out = df.diff(periods = 1)
+    if method == 'Arithmetic Return System':
+        out = df/df.shift(1)-1
+    if method == 'Log Return':
+        out = np.log(df/df.shift(1))
+    out.dropna(inplace=True)
+    return out
+
+daily_LogReturn = cal_return(Prices, 'Log Return')
+daily_LogReturn = daily_LogReturn - np.mean(daily_LogReturn, axis = 0)
+returns_std = np.std(daily_LogReturn).tolist()[0]
+
+nSim = 1000
+fwdT = 10
+currentS = Prices['AAPL'].iloc[-1]
+simReturns = np.random.normal(0, returns_std, (fwdT, nSim))
+cumulativeReturns = simReturns.sum(axis=0)
+simPrices = currentS * np.exp(cumulativeReturns)
+
+for j in range(len(data_2)):
+    Strike = data_2.loc[j, 'Strike']
+    cate = data_2.loc[j, 'OptionType']
+    market_price = data_2.loc[j, 'CurrentPrice']
+    if data_2.loc[j, 'Type'] != 'Option':
+        vol = np.nan
+    else:
+        vol = implied_volatility(current_price, Strike, ttm/365, rf, div_amts, div_times, market_price, N, cate)
+    data_2.loc[j, 'vol'] = vol
+
+data_2 = data_2[data_2['Portfolio']=='PutSpread']
+
+iterations = np.arange(1, nSim + 1)
+values = data_2.merge(pd.DataFrame({'iteration': iterations}), how='cross')
+nVals = len(values)
+
+values['fwd_ttm'] = [
+    (ttm - fwdT) / 365 if row['Type'] == "Option" else np.nan
+    for _, row in values.iterrows()
+]
+
+simulatedValue = np.zeros(nVals)
+currentValue = np.zeros(nVals)
+pnl = np.zeros(nVals)
+
+for i, row in values.iterrows():
+    simprice = simPrices[row['iteration'] - 1]
+    currentValue[i] = row['Holding'] * row['CurrentPrice']
+    if (row['Type'] == "Option") & (row['OptionType'] == 'Call'):
+        simulatedValue[i] = row['Holding'] * bt_american(simprice, row['Strike'], row['fwd_ttm'], rf, [], [], row['vol'], N, 'Call')
+    if (row['Type'] == "Option") & (row['OptionType'] == 'Put'):
+        simulatedValue[i] = row['Holding'] * bt_american(simprice, row['Strike'], row['fwd_ttm'], rf, [], [], row['vol'], N, 'Put')
+    elif row['Type'] == "Stock":
+        simulatedValue[i] = row['Holding'] * simprice
+    pnl[i] = simulatedValue[i] - currentValue[i]
+
+values['simulatedValue'] = simulatedValue
+values['currentValue'] = currentValue
+values['pnl'] = pnl
+values = values.groupby('iteration', as_index=False).sum()[['iteration', 'pnl', 'simulatedValue']]
+values.to_csv('hh.csv')
+
+# Parameters
+confidence_level = 0.95
+z_score = norm.ppf(confidence_level)
+
+# Calculate mean and standard deviation of PnL
+pnl_mean = values['pnl'].mean()
+pnl_std_dev = values['pnl'].std()
+
+# Calculate VaR as a dollar loss
+VaR = pnl_mean - z_score * pnl_std_dev
+
+# Calculate ES as a dollar loss
+ES = pnl_mean - (pnl_std_dev * norm.pdf(z_score)) / (1 - confidence_level)
+
+print(f"Delta-Normal VaR at {confidence_level*100}% confidence level: ${VaR:.2f}")
+print(f"Delta-Normal Expected Shortfall (ES) at {confidence_level*100}% confidence level: ${ES:.2f}")
+
+# 思路 老方法先计算implied volatility
+# 1. 计算10天的return,然后通过乘法计算出每天的underlying价格
+# 2. 根据underlying and ttm，还有之前算过的ivol计算美式期权的价格，使用之前的bt_america，算出期权价格
+# 3. 再计算pnl, 然后是VaR, ES
+
+#-------------------------------Problem 3--------------------------------------
+FF3 = pd.read_csv('F-F_Research_Data_Factors_daily.csv')
+FF3['Date'] = pd.to_datetime(FF3['Date'], format='%Y%m%d')
+
+MOM = pd.read_csv('F-F_Momentum_Factor_daily.csv')
+MOM.dropna(inplace=True)
+MOM['Date'] = pd.to_datetime(MOM['Date'], format='%Y%m%d')
+
+data3 = pd.read_csv('DailyPrices.csv')
+stocks = ['AAPL', 'META', 'UNH', 'MA', 'MSFT', 'NVDA', 'HD', 'PFE', 'AMZN', 'BRK-B', 'PG', 'XOM', 'TSLA', 'JPM', 'V', 'DIS', 'GOOGL', 'JNJ', 'BAC', 'CSCO']
+data3 = data3[['Date', 'AAPL', 'META', 'UNH', 'MA', 'MSFT', 'NVDA', 'HD', 'PFE', 'AMZN', 'BRK-B', 'PG', 'XOM', 'TSLA', 'JPM', 'V', 'DIS', 'GOOGL', 'JNJ', 'BAC', 'CSCO']]
+data3['Date'] = pd.to_datetime(data3['Date'])
+for stock in stocks:
+    data3[stock] = cal_return(data3[stock], 'Log Return')
+
+data = pd.merge(FF3, MOM, how='left', on = ['Date'])
+data = pd.merge(data, data3, how = 'left', on = ['Date'])
+data = data.dropna().reset_index(drop = True)
+
+data[['Mkt-RF', 'SMB', 'HML', 'RF', 'Mom   ']] /= 100
+
+betas = {}
+for stock in stocks:
+    # Define dependent and independent variables
+    Y = data[stock] - data['RF']
+    X = data[['Mkt-RF', 'SMB', 'HML', 'Mom   ']]
+    X = add_constant(X)
+    
+    # Run OLS regression
+    model = OLS(Y, X).fit()
+    betas[stock] = model.params  # Store factor loadings (betas)
+
+# Convert betas to a DataFrame
+betas_df = pd.DataFrame(betas).T
+
+factor_means = data[['Mkt-RF', 'SMB', 'HML', 'Mom   ']].mean() * 252
+# Risk-free rate (annualized)
+rf_annual = 0.05
+
+# Calculate expected returns based on factor model
+expected_returns = rf_annual + betas_df[['Mkt-RF', 'SMB', 'HML', 'Mom   ']].dot(factor_means)
+cov_matrix = data3[stocks].cov() * 252
+
+def portfolio_sharpe(weights, expected_returns, cov_matrix, rf):
+    portfolio_return = np.dot(weights, expected_returns)
+    portfolio_volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    sharpe_ratio = (portfolio_return - rf) / portfolio_volatility
+    return -sharpe_ratio  # Negative because we are minimizing
+
+# Constraints: sum of weights = 1
+constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+
+# Bounds: weights between 0 and 1
+bounds = [(0, 1) for _ in stocks]
+
+# Initial guess
+init_guess = [1/len(stocks)] * len(stocks)
+
+# Run optimization
+opt_result = minimize(portfolio_sharpe, init_guess, args=(expected_returns, cov_matrix, rf_annual),
+                      method='SLSQP', bounds=bounds, constraints=constraints)
+
+# Extract optimal weights
+optimal_weights = opt_result.x
+
+# Display the super-efficient portfolio weights
+super_efficient_portfolio = pd.Series(optimal_weights, index=stocks)
+
+portfolio_return = np.dot(super_efficient_portfolio, expected_returns)
+portfolio_volatility = np.sqrt(np.dot(super_efficient_portfolio.T, np.dot(cov_matrix, super_efficient_portfolio)))
+sharpe_ratio = (portfolio_return - rf_annual) / portfolio_volatility
+
+print("Super-Efficient Portfolio Expected Annual Return:", portfolio_return)
+print("Super-Efficient Portfolio Volatility:", portfolio_volatility)
+print("Super-Efficient Portfolio Sharpe Ratio:", sharpe_ratio)
+
