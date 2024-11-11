@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Nov  7 15:19:19 2024
-"""
-
 import pandas as pd
 import numpy as np
 import os
@@ -420,12 +415,16 @@ print(f"Delta-Normal Expected Shortfall (ES) at {confidence_level*100}% confiden
 #-------------------------------Problem 3--------------------------------------
 FF3 = pd.read_csv('F-F_Research_Data_Factors_daily.csv')
 FF3['Date'] = pd.to_datetime(FF3['Date'], format='%Y%m%d')
+FF3.columns = FF3.columns.str.replace(' ', '')
+
 
 MOM = pd.read_csv('F-F_Momentum_Factor_daily.csv')
 MOM.dropna(inplace=True)
 MOM['Date'] = pd.to_datetime(MOM['Date'], format='%Y%m%d')
+MOM.columns = MOM.columns.str.replace(' ', '')
 
 data3 = pd.read_csv('DailyPrices.csv')
+data3.columns = data3.columns.str.replace(' ', '')
 stocks = ['AAPL', 'META', 'UNH', 'MA', 'MSFT', 'NVDA', 'HD', 'PFE', 'AMZN', 'BRK-B', 'PG', 'XOM', 'TSLA', 'JPM', 'V', 'DIS', 'GOOGL', 'JNJ', 'BAC', 'CSCO']
 data3 = data3[['Date', 'AAPL', 'META', 'UNH', 'MA', 'MSFT', 'NVDA', 'HD', 'PFE', 'AMZN', 'BRK-B', 'PG', 'XOM', 'TSLA', 'JPM', 'V', 'DIS', 'GOOGL', 'JNJ', 'BAC', 'CSCO']]
 data3['Date'] = pd.to_datetime(data3['Date'])
@@ -436,14 +435,14 @@ data = pd.merge(FF3, MOM, how='left', on = ['Date'])
 data = pd.merge(data, data3, how = 'left', on = ['Date'])
 data = data.dropna().reset_index(drop = True)
 
-data[['Mkt-RF', 'SMB', 'HML', 'RF', 'Mom   ']] /= 100
+data[['Mkt-RF', 'SMB', 'HML', 'RF', 'Mom']] /= 100
 
 betas = {}
 for stock in stocks:
     # Define dependent and independent variables
     Y = data[stock] - data['RF']
-    X = data[['Mkt-RF', 'SMB', 'HML', 'Mom   ']]
-    X = add_constant(X)
+    X = data[['Mkt-RF', 'SMB', 'HML', 'Mom']]
+    #X = add_constant(X)
     
     # Run OLS regression
     model = OLS(Y, X).fit()
@@ -452,12 +451,14 @@ for stock in stocks:
 # Convert betas to a DataFrame
 betas_df = pd.DataFrame(betas).T
 
-factor_means = data[['Mkt-RF', 'SMB', 'HML', 'Mom   ']].mean() * 252
+factor_means = data[['Mkt-RF', 'SMB', 'HML', 'Mom']].mean() 
 # Risk-free rate (annualized)
 rf_annual = 0.05
 
 # Calculate expected returns based on factor model
-expected_returns = rf_annual + betas_df[['Mkt-RF', 'SMB', 'HML', 'Mom   ']].dot(factor_means)
+expected_returns = betas_df[['Mkt-RF', 'SMB', 'HML', 'Mom']].dot(factor_means) + data['RF'].mean()
+expected_returns = expected_returns.apply(lambda x: (1+x)**252-1) 
+
 cov_matrix = data3[stocks].cov() * 252
 
 def portfolio_sharpe(weights, expected_returns, cov_matrix, rf):
@@ -492,4 +493,5 @@ sharpe_ratio = (portfolio_return - rf_annual) / portfolio_volatility
 print("Super-Efficient Portfolio Expected Annual Return:", portfolio_return)
 print("Super-Efficient Portfolio Volatility:", portfolio_volatility)
 print("Super-Efficient Portfolio Sharpe Ratio:", sharpe_ratio)
+
 
